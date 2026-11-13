@@ -12,7 +12,10 @@ import {
   deleteAvatar
 } from '../controllers/authController.js';
 import { protect, authLimiter } from '../middleware/authMiddleware.js';
-import { avatarUpload } from '../middleware/uploadMiddleware.js';
+import {
+  avatarUpload,
+  validateUploadedFileSignatures
+} from '../middleware/uploadMiddleware.js';
 
 const router = express.Router();
 
@@ -26,7 +29,7 @@ router.put('/reset-password/:resetToken', authLimiter, resetPassword);
 // Protected routes
 router.get('/me', protect, getMe);
 router.put('/preferences', protect, updatePreferences);
-router.put('/avatar', protect, avatarUpload, updateAvatar);
+router.put('/avatar', protect, avatarUpload, validateUploadedFileSignatures, updateAvatar);
 router.delete('/avatar', protect, deleteAvatar);
 
 export default router;

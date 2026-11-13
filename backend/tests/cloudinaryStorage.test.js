@@ -9,7 +9,12 @@ import {
 } from '../services/storageService.js';
 
 describe('Cloudinary storage', () => {
+  let previousUseTestDatabase;
+
   before(() => {
+    previousUseTestDatabase = process.env.USE_TEST_DATABASE;
+    delete process.env.USE_TEST_DATABASE;
+
     process.env.CLOUDINARY_CLOUD_NAME = 'test-cloud';
     process.env.CLOUDINARY_API_KEY = 'test-key';
     process.env.CLOUDINARY_API_SECRET = 'test-secret';
@@ -34,6 +39,9 @@ describe('Cloudinary storage', () => {
     delete process.env.CLOUDINARY_API_KEY;
     delete process.env.CLOUDINARY_API_SECRET;
     delete process.env.CLOUDINARY_UPLOAD_FOLDER;
+
+    if (previousUseTestDatabase === undefined) delete process.env.USE_TEST_DATABASE;
+    else process.env.USE_TEST_DATABASE = previousUseTestDatabase;
   });
 
   test('Cloudinary is reported as configured when all server variables exist', () => {

@@ -5,7 +5,6 @@ import {
   Upload,
   FileText,
   Image as ImageIcon,
-  Calendar,
   DollarSign,
   Tag,
   Store,
@@ -15,15 +14,25 @@ import {
   AlertCircle,
   Clock,
   ShieldCheck,
-  Sparkles,
-  Info
+  Info,
+  ScanLine,
+  BadgeCheck
 } from 'lucide-react';
-import { createWarranty } from '../services/api';
+import { createWarranty, extractInvoice } from '../services/api';
 import { useProductImageSearch } from '../hooks/useProductImageSearch';
-import { formatDate } from '../utils/formatters';
+import { calculateExpiryDate, formatCalendarDate } from '../utils/expiry';
+import InvoiceReviewPanel from '../components/InvoiceReviewPanel';
 
 const CATEGORIES = ['Electronics', 'Appliances', 'Furniture', 'Vehicles', 'Accessories', 'Other'];
 const UNITS = ['Days', 'Months', 'Years'];
+
+const FromInvoiceBadge = ({ fields, name }) =>
+  fields && fields[name] ? (
+    <span className="ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200 dark:bg-blue-950/50 dark:text-blue-300 dark:border-blue-900/60 align-middle">
+      <ScanLine className="w-3 h-3" />
+      From invoice
+    </span>
+  ) : null;
 
 const AddWarranty = () => {
   const navigate = useNavigate();
@@ -31,12 +40,16 @@ const AddWarranty = () => {
   const [formData, setFormData] = useState({
     productName: '',
     brand: '',
+    modelNumber: '',
     category: 'Electronics',
-    purchaseDate: new Date().toISOString().split('T')[0], // today YYYY-MM-DD
-    warrantyDuration: 12,
+    purchaseDate: new Date().toISOString().split('T')[0],
+    warrantyStartDate: '',
+    warrantyDuration: '',
     warrantyUnit: 'Months',
     store: '',
     price: '',
+    currency: '',
+    invoiceNumber: '',
     serialNumber: '',
     notes: ''
   });
@@ -45,32 +58,26 @@ const AddWarranty = () => {
   const [imagePreview, setImagePreview] = useState(null);
   const [selectedOnlineImage, setSelectedOnlineImage] = useState('');
   const [invoiceFile, setInvoiceFile] = useState(null);
+  const [invoiceUpload, setInvoiceUpload] = useState(null);
+  const [invoiceProcessing, setInvoiceProcessing] = useState(false);
+  const [invoiceError, setInvoiceError] = useState('');
+  const [extractedFields, setExtractedFields] = useState({});
 
   const imageSearchQuery = [formData.productName, formData.brand].filter(Boolean).join(' ').trim();
   const {
     results: onlineImages,
-    loading: onlineImageSearchLoading,
-    error: onlineImageSearchError
+    loading: onlineImageSearchLoading
   } = useProductImageSearch(imageSearchQuery);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [fieldErrors, setFieldErrors] = useState({});
 
-  // Helper calculation for live expiry preview
-  const getCalculatedExpiryPreview = () => {
-    if (!formData.purchaseDate || !formData.warrantyDuration) return null;
-    const date = new Date(formData.purchaseDate);
-    const num = Number(formData.warrantyDuration) || 0;
-    if (formData.warrantyUnit === 'Days') {
-      date.setDate(date.getDate() + num);
-    } else if (formData.warrantyUnit === 'Years') {
-      date.setFullYear(date.getFullYear() + num);
-    } else {
-      date.setMonth(date.getMonth() + num);
-    }
-    return date;
-  };
+  const expiryBaseDate = formData.warrantyStartDate || formData.purchaseDate;
+  const expiryPreviewDate =
+    expiryBaseDate && formData.warrantyDuration
+      ? calculateExpiryDate(expiryBaseDate, formData.warrantyDuration, formData.warrantyUnit)
+      : null;
 
   const handleInputChange = (e) => {
     const { name, value } = e.target;
@@ -101,16 +108,79 @@ const AddWarranty = () => {
     setError('');
   };
 
-  const handleInvoiceChange = (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      if (file.size > 5 * 1024 * 1024) {
-        setError('Document file size must be less than 5MB');
-        return;
+  const applyExtractedFields = (fields) => {
+    if (!fields || typeof fields !== 'object') return;
+
+    setFormData((prev) => {
+      const next = { ...prev };
+      const assign = (key, field) => {
+        if (field && field.value !== undefined && field.value !== null && field.value !== '') {
+          next[key] = String(field.value);
+        }
+      };
+
+      assign('productName', fields.productName);
+      assign('brand', fields.brand);
+      assign('modelNumber', fields.modelNumber);
+      assign('serialNumber', fields.serialNumber);
+      assign('purchaseDate', fields.purchaseDate);
+      assign('warrantyStartDate', fields.warrantyStartDate);
+      assign('store', fields.store);
+      assign('invoiceNumber', fields.invoiceNumber);
+      assign('currency', fields.currency);
+      assign('price', fields.price);
+
+      // Only accept duration when the invoice itself states both the number
+      // and the unit. Never infer a warranty period.
+      if (fields.warrantyDuration?.value && fields.warrantyUnit?.value) {
+        next.warrantyDuration = String(fields.warrantyDuration.value);
+        next.warrantyUnit = fields.warrantyUnit.value;
       }
-      setInvoiceFile(file);
-      setError('');
+
+      return next;
+    });
+  };
+
+  const processInvoice = async (file) => {
+    setInvoiceProcessing(true);
+    setInvoiceError('');
+    setInvoiceUpload(null);
+    setExtractedFields({});
+
+    try {
+      const submission = new FormData();
+      submission.append('invoiceFile', file);
+      const response = await extractInvoice(submission);
+
+      if (response.success && response.data) {
+        setInvoiceUpload(response.data);
+        const fields = response.data.extraction?.fields || {};
+        setExtractedFields(fields);
+        applyExtractedFields(fields);
+      } else {
+        setInvoiceError(response.message || 'The invoice could not be read automatically.');
+      }
+    } catch (err) {
+      console.error(err);
+      setInvoiceError(
+        err.response?.data?.message ||
+          'Invoice reading failed. You can still enter the details manually and save with the invoice attached.'
+      );
+    } finally {
+      setInvoiceProcessing(false);
     }
+  };
+
+  const handleInvoiceChange = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) {
+      setError('Document file size must be less than 5MB');
+      return;
+    }
+    setInvoiceFile(file);
+    setError('');
+    await processInvoice(file);
   };
 
   const removeImage = () => {
@@ -121,6 +191,9 @@ const AddWarranty = () => {
 
   const removeInvoice = () => {
     setInvoiceFile(null);
+    setInvoiceUpload(null);
+    setExtractedFields({});
+    setInvoiceError('');
   };
 
   const validateForm = () => {
@@ -129,7 +202,7 @@ const AddWarranty = () => {
     if (!formData.category) errors.category = 'Category is required';
     if (!formData.purchaseDate) errors.purchaseDate = 'Purchase date is required';
     if (!formData.warrantyDuration || Number(formData.warrantyDuration) <= 0) {
-      errors.warrantyDuration = 'Valid warranty duration is required (minimum 1)';
+      errors.warrantyDuration = 'Enter the warranty duration stated by the manufacturer or invoice';
     }
     setFieldErrors(errors);
     return Object.keys(errors).length === 0;
@@ -137,7 +210,7 @@ const AddWarranty = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (loading) return; // Prevent duplicate submission
+    if (loading || invoiceProcessing) return;
     if (!validateForm()) return;
 
     try {
@@ -154,7 +227,12 @@ const AddWarranty = () => {
       } else if (selectedOnlineImage) {
         submissionData.append('onlineProductImage', selectedOnlineImage);
       }
-      if (invoiceFile) {
+
+      // Use the reviewed draft so the file is not uploaded twice. If extraction
+      // failed before a draft was created, still attach the original file.
+      if (invoiceUpload?.uploadId) {
+        submissionData.append('invoiceUploadId', invoiceUpload.uploadId);
+      } else if (invoiceFile) {
         submissionData.append('invoiceFile', invoiceFile);
       }
 
@@ -172,11 +250,8 @@ const AddWarranty = () => {
     }
   };
 
-  const expiryPreviewDate = getCalculatedExpiryPreview();
-
   return (
     <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6 animate-fadeIn">
-      {/* Back Link */}
       <Link
         to="/warranties"
         className="inline-flex items-center space-x-2 text-sm font-semibold text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-colors"
@@ -185,17 +260,15 @@ const AddWarranty = () => {
         <span>Back to Warranties</span>
       </Link>
 
-      {/* Header */}
       <div>
         <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white tracking-tight">
           Add New Warranty
         </h1>
         <p className="text-slate-500 dark:text-slate-400 text-sm mt-1">
-          Enter product details, upload invoice documents, and set warranty expiry.
+          Start with an invoice to auto-fill what can be read, then review every value before saving.
         </p>
       </div>
 
-      {/* Error Alert */}
       {error && (
         <div className="p-4 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900/60 rounded-xl flex items-center space-x-3 text-rose-700 dark:text-rose-300 text-sm">
           <AlertCircle className="w-5 h-5 shrink-0" />
@@ -203,21 +276,102 @@ const AddWarranty = () => {
         </div>
       )}
 
-      {/* Main Form */}
-      <form onSubmit={handleSubmit} className="bg-white dark:bg-dark-850 rounded-2xl border border-slate-200/90 dark:border-dark-750/80 shadow-xs p-6 sm:p-8 space-y-8 transition-colors">
+      {/* Step 1: invoice upload and review */}
+      <div className="bg-white dark:bg-dark-850 rounded-2xl border border-slate-200/90 dark:border-dark-750/80 shadow-xs p-6 sm:p-8 space-y-4 transition-colors">
+        <div>
+          <h2 className="text-base font-bold text-slate-900 dark:text-white pb-3 border-b border-slate-100 dark:border-dark-800 flex items-center space-x-2">
+            <FileText className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+            <span>1. Invoice / Receipt (optional)</span>
+          </h2>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-3">
+            Upload a text PDF, scanned PDF, JPG, or PNG. The original file is preserved with a SHA-256
+            checksum. If automatic reading is unavailable, you can still fill the form manually.
+          </p>
+        </div>
 
-        {/* Section 1: Product Information */}
+        {invoiceProcessing && (
+          <div className="p-4 rounded-xl border border-blue-200/80 dark:border-blue-900/50 bg-blue-50/70 dark:bg-blue-950/30 flex items-center space-x-3 text-sm text-blue-800 dark:text-blue-300">
+            <span className="w-4 h-4 border-2 border-blue-300 border-t-blue-700 rounded-full animate-spin" />
+            <span>Reading invoice and storing the original evidence...</span>
+          </div>
+        )}
+
+        {invoiceError && (
+          <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/50 text-amber-800 dark:text-amber-300 text-xs flex items-start gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+            <span>{invoiceError}</span>
+          </div>
+        )}
+
+        {invoiceFile ? (
+          <div className="flex items-center justify-between p-4 rounded-xl border border-slate-200 dark:border-dark-700 bg-slate-50 dark:bg-dark-900 gap-3">
+            <div className="flex items-center space-x-3 overflow-hidden">
+              <FileCheck className="w-6 h-6 text-blue-600 dark:text-blue-400 shrink-0" />
+              <div className="truncate">
+                <p className="text-sm font-semibold text-slate-800 dark:text-slate-200 truncate">
+                  {invoiceFile.name}
+                </p>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  {(invoiceFile.size / (1024 * 1024)).toFixed(2)} MB • {invoiceFile.type || 'Document'}
+                  {invoiceUpload?.invoice?.checksum ? ' • checksum captured' : ''}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={removeInvoice}
+              disabled={invoiceProcessing}
+              className="p-1.5 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 rounded-lg hover:bg-slate-100 dark:hover:bg-dark-800 transition-colors disabled:opacity-50"
+              title="Remove invoice from this form"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+        ) : (
+          <label className="flex flex-col items-center justify-center p-6 border-2 border-dashed border-slate-300 dark:border-dark-700 rounded-2xl hover:border-blue-400 dark:hover:border-blue-500 hover:bg-slate-50 dark:hover:bg-dark-900 cursor-pointer transition-colors group">
+            <div className="w-12 h-12 rounded-xl bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 flex items-center justify-center mb-2 group-hover:scale-105 transition-transform">
+              <Upload className="w-6 h-6" />
+            </div>
+            <p className="text-sm font-semibold text-slate-700 dark:text-slate-300">
+              Upload invoice or purchase receipt
+            </p>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+              Supports PDF, JPG, PNG, WEBP (Max 5MB)
+            </p>
+            <input
+              type="file"
+              accept="application/pdf,image/jpeg,image/png,image/webp"
+              onChange={handleInvoiceChange}
+              className="hidden"
+            />
+          </label>
+        )}
+
+        {invoiceUpload && (
+          <InvoiceReviewPanel
+            invoice={invoiceUpload.invoice}
+            extraction={invoiceUpload.extraction}
+            onClear={removeInvoice}
+          />
+        )}
+      </div>
+
+      {/* Steps 2-5: confirmed warranty details */}
+      <form
+        onSubmit={handleSubmit}
+        className="bg-white dark:bg-dark-850 rounded-2xl border border-slate-200/90 dark:border-dark-750/80 shadow-xs p-6 sm:p-8 space-y-8 transition-colors"
+      >
         <div>
           <h2 className="text-base font-bold text-slate-900 dark:text-white pb-3 border-b border-slate-100 dark:border-dark-800 flex items-center space-x-2">
             <Tag className="w-5 h-5 text-blue-600 dark:text-blue-400" />
-            <span>1. Product Information</span>
+            <span>2. Product Information</span>
           </h2>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-5 mt-4">
-            {/* Product Name */}
             <div className="sm:col-span-2">
               <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
                 Product Name <span className="text-rose-500">*</span>
+                <FromInvoiceBadge fields={extractedFields} name="productName" />
               </label>
               <input
                 type="text"
@@ -234,10 +388,10 @@ const AddWarranty = () => {
               )}
             </div>
 
-            {/* Brand */}
             <div>
               <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
                 Brand / Manufacturer
+                <FromInvoiceBadge fields={extractedFields} name="brand" />
               </label>
               <input
                 type="text"
@@ -249,7 +403,21 @@ const AddWarranty = () => {
               />
             </div>
 
-            {/* Category */}
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
+                Model Number
+                <FromInvoiceBadge fields={extractedFields} name="modelNumber" />
+              </label>
+              <input
+                type="text"
+                name="modelNumber"
+                placeholder="e.g. WH-1000XM5"
+                value={formData.modelNumber}
+                onChange={handleInputChange}
+                className="w-full px-4 py-2.5 bg-slate-50 dark:bg-dark-900 border border-slate-200 dark:border-dark-700 rounded-xl text-sm text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+
             <div>
               <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
                 Category <span className="text-rose-500">*</span>
@@ -270,54 +438,51 @@ const AddWarranty = () => {
           </div>
         </div>
 
-        {/* Section 2: Purchase Information */}
         <div>
           <h2 className="text-base font-bold text-slate-900 dark:text-white pb-3 border-b border-slate-100 dark:border-dark-800 flex items-center space-x-2">
             <Store className="w-5 h-5 text-blue-600 dark:text-blue-400" />
-            <span>2. Purchase Information</span>
+            <span>3. Purchase Information</span>
           </h2>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-5 mt-4">
-            {/* Purchase Date */}
             <div>
               <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
                 Purchase Date <span className="text-rose-500">*</span>
+                <FromInvoiceBadge fields={extractedFields} name="purchaseDate" />
               </label>
-              <div className="relative">
-                <input
-                  type="date"
-                  name="purchaseDate"
-                  value={formData.purchaseDate}
-                  onChange={handleInputChange}
-                  className={`w-full px-4 py-2.5 bg-slate-50 dark:bg-dark-900 border ${
-                    fieldErrors.purchaseDate ? 'border-rose-500' : 'border-slate-200 dark:border-dark-700'
-                  } rounded-xl text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                />
-              </div>
+              <input
+                type="date"
+                name="purchaseDate"
+                value={formData.purchaseDate}
+                onChange={handleInputChange}
+                className={`w-full px-4 py-2.5 bg-slate-50 dark:bg-dark-900 border ${
+                  fieldErrors.purchaseDate ? 'border-rose-500' : 'border-slate-200 dark:border-dark-700'
+                } rounded-xl text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500`}
+              />
               {fieldErrors.purchaseDate && (
                 <p className="mt-1 text-xs text-rose-500">{fieldErrors.purchaseDate}</p>
               )}
             </div>
 
-            {/* Store / Vendor */}
             <div>
               <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
                 Store / Vendor
+                <FromInvoiceBadge fields={extractedFields} name="store" />
               </label>
               <input
                 type="text"
                 name="store"
-                placeholder="e.g. Best Buy, Amazon, Official Store"
+                placeholder="e.g. Best Buy, Amazon"
                 value={formData.store}
                 onChange={handleInputChange}
                 className="w-full px-4 py-2.5 bg-slate-50 dark:bg-dark-900 border border-slate-200 dark:border-dark-700 rounded-xl text-sm text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
 
-            {/* Price */}
             <div>
               <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
-                Price Paid ($)
+                Purchase Amount
+                <FromInvoiceBadge fields={extractedFields} name="price" />
               </label>
               <div className="relative">
                 <DollarSign className="w-4 h-4 text-slate-400 dark:text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
@@ -334,10 +499,41 @@ const AddWarranty = () => {
               </div>
             </div>
 
-            {/* Serial Number */}
-            <div className="sm:col-span-3">
+            <div>
               <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
-                Serial Number / Model ID
+                Currency
+                <FromInvoiceBadge fields={extractedFields} name="currency" />
+              </label>
+              <input
+                type="text"
+                name="currency"
+                maxLength="3"
+                placeholder="USD, INR, EUR"
+                value={formData.currency}
+                onChange={handleInputChange}
+                className="w-full px-4 py-2.5 bg-slate-50 dark:bg-dark-900 border border-slate-200 dark:border-dark-700 rounded-xl text-sm uppercase text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
+                Invoice Number
+                <FromInvoiceBadge fields={extractedFields} name="invoiceNumber" />
+              </label>
+              <input
+                type="text"
+                name="invoiceNumber"
+                placeholder="e.g. INV-2026-0042"
+                value={formData.invoiceNumber}
+                onChange={handleInputChange}
+                className="w-full px-4 py-2.5 bg-slate-50 dark:bg-dark-900 border border-slate-200 dark:border-dark-700 rounded-xl text-sm text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
+                Serial Number / IMEI
+                <FromInvoiceBadge fields={extractedFields} name="serialNumber" />
               </label>
               <div className="relative">
                 <Hash className="w-4 h-4 text-slate-400 dark:text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
@@ -354,23 +550,40 @@ const AddWarranty = () => {
           </div>
         </div>
 
-        {/* Section 3: Warranty Details & Live Expiry Preview */}
         <div>
           <h2 className="text-base font-bold text-slate-900 dark:text-white pb-3 border-b border-slate-100 dark:border-dark-800 flex items-center space-x-2">
             <Clock className="w-5 h-5 text-blue-600 dark:text-blue-400" />
-            <span>3. Warranty Details</span>
+            <span>4. Warranty Details</span>
           </h2>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-5 mt-4">
-            {/* Warranty Duration */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-5 mt-4">
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
+                Warranty Start Date (optional)
+                <FromInvoiceBadge fields={extractedFields} name="warrantyStartDate" />
+              </label>
+              <input
+                type="date"
+                name="warrantyStartDate"
+                value={formData.warrantyStartDate}
+                onChange={handleInputChange}
+                className="w-full px-4 py-2.5 bg-slate-50 dark:bg-dark-900 border border-slate-200 dark:border-dark-700 rounded-xl text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <p className="mt-1 text-[11px] text-slate-400">
+                Leave blank to use the purchase date.
+              </p>
+            </div>
+
             <div>
               <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
                 Warranty Duration <span className="text-rose-500">*</span>
+                <FromInvoiceBadge fields={extractedFields} name="warrantyDuration" />
               </label>
               <input
                 type="number"
                 min="1"
                 name="warrantyDuration"
+                placeholder="Enter duration"
                 value={formData.warrantyDuration}
                 onChange={handleInputChange}
                 className={`w-full px-4 py-2.5 bg-slate-50 dark:bg-dark-900 border ${
@@ -382,10 +595,10 @@ const AddWarranty = () => {
               )}
             </div>
 
-            {/* Warranty Unit */}
             <div>
               <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
                 Unit <span className="text-rose-500">*</span>
+                <FromInvoiceBadge fields={extractedFields} name="warrantyUnit" />
               </label>
               <select
                 name="warrantyUnit"
@@ -402,7 +615,16 @@ const AddWarranty = () => {
             </div>
           </div>
 
-          {/* Automatic Expiry Date Preview Pill */}
+          {!formData.warrantyDuration && (
+            <div className="mt-4 p-3 rounded-xl border border-amber-200 dark:border-amber-900/50 bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-300 text-xs flex items-start gap-2">
+              <Info className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>
+                The warranty duration is not inferred from the product category or model. Enter the
+                duration stated by the seller, manufacturer, or invoice.
+              </span>
+            </div>
+          )}
+
           {expiryPreviewDate && (
             <div className="mt-4 p-4 rounded-xl border border-blue-200/80 dark:border-blue-900/50 bg-blue-50/70 dark:bg-blue-950/30 flex items-center justify-between">
               <div className="flex items-center space-x-3">
@@ -412,22 +634,22 @@ const AddWarranty = () => {
                     Calculated Warranty Expiry:
                   </p>
                   <p className="text-sm font-bold text-blue-800 dark:text-blue-200">
-                    {formatDate(expiryPreviewDate)}
+                    {formatCalendarDate(expiryPreviewDate)}
                   </p>
                 </div>
               </div>
-              <span className="text-xs px-2.5 py-1 rounded-md bg-blue-100 dark:bg-blue-900/60 text-blue-700 dark:text-blue-300 font-semibold">
-                Auto Computed
+              <span className="text-xs px-2.5 py-1 rounded-md bg-blue-100 dark:bg-blue-900/60 text-blue-700 dark:text-blue-300 font-semibold flex items-center gap-1">
+                <BadgeCheck className="w-3.5 h-3.5" />
+                Calendar-aware
               </span>
             </div>
           )}
         </div>
 
-        {/* Section 4: Product Image */}
         <div>
           <h2 className="text-base font-bold text-slate-900 dark:text-white pb-3 border-b border-slate-100 dark:border-dark-800 flex items-center space-x-2">
             <ImageIcon className="w-5 h-5 text-blue-600 dark:text-blue-400" />
-            <span>4. Product Image</span>
+            <span>5. Product Image</span>
           </h2>
 
           <div className="mt-4 space-y-4">
@@ -464,11 +686,13 @@ const AddWarranty = () => {
               </div>
             )}
 
-            {!onlineImageSearchLoading && formData.productName.trim().length >= 3 && onlineImages.length === 0 && (
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                No online image found. You can upload a photo manually.
-              </p>
-            )}
+            {!onlineImageSearchLoading &&
+              formData.productName.trim().length >= 3 &&
+              onlineImages.length === 0 && (
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  No online image found. You can upload a photo manually.
+                </p>
+              )}
 
             {imagePreview ? (
               <div className="flex flex-col sm:flex-row sm:items-center gap-4">
@@ -560,59 +784,6 @@ const AddWarranty = () => {
           </div>
         </div>
 
-{/* Section 5: Invoice / Receipt Document */}
-        <div>
-          <h2 className="text-base font-bold text-slate-900 dark:text-white pb-3 border-b border-slate-100 dark:border-dark-800 flex items-center space-x-2">
-            <FileText className="w-5 h-5 text-blue-600 dark:text-blue-400" />
-            <span>5. Invoice / Receipt Document</span>
-          </h2>
-
-          <div className="mt-4">
-            {invoiceFile ? (
-              <div className="flex items-center justify-between p-4 rounded-xl border border-slate-200 dark:border-dark-700 bg-slate-50 dark:bg-dark-900">
-                <div className="flex items-center space-x-3 overflow-hidden">
-                  <FileCheck className="w-6 h-6 text-blue-600 dark:text-blue-400 shrink-0" />
-                  <div className="truncate">
-                    <p className="text-sm font-semibold text-slate-800 dark:text-slate-200 truncate">
-                      {invoiceFile.name}
-                    </p>
-                    <p className="text-xs text-slate-500 dark:text-slate-400">
-                      {(invoiceFile.size / (1024 * 1024)).toFixed(2)} MB • {invoiceFile.type || 'Document'}
-                    </p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={removeInvoice}
-                  className="p-1.5 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 rounded-lg hover:bg-slate-100 dark:hover:bg-dark-800 transition-colors"
-                  title="Remove invoice"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-            ) : (
-              <label className="flex flex-col items-center justify-center p-6 border-2 border-dashed border-slate-300 dark:border-dark-700 rounded-2xl hover:border-blue-400 dark:hover:border-blue-500 hover:bg-slate-50 dark:hover:bg-dark-900 cursor-pointer transition-colors group">
-                <div className="w-12 h-12 rounded-xl bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 flex items-center justify-center mb-2 group-hover:scale-105 transition-transform">
-                  <FileText className="w-6 h-6" />
-                </div>
-                <p className="text-sm font-semibold text-slate-700 dark:text-slate-300">
-                  Upload Invoice / Purchase Receipt
-                </p>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                  Supports PDF, JPG, PNG (Max 5MB)
-                </p>
-                <input
-                  type="file"
-                  accept="application/pdf,image/jpeg,image/png,image/webp"
-                  onChange={handleInvoiceChange}
-                  className="hidden"
-                />
-              </label>
-            )}
-          </div>
-        </div>
-
-        {/* Section 6: Additional Notes */}
         <div>
           <h2 className="text-base font-bold text-slate-900 dark:text-white pb-3 border-b border-slate-100 dark:border-dark-800 flex items-center space-x-2">
             <Info className="w-5 h-5 text-blue-600 dark:text-blue-400" />
@@ -631,7 +802,6 @@ const AddWarranty = () => {
           </div>
         </div>
 
-        {/* Submit Actions */}
         <div className="pt-4 border-t border-slate-100 dark:border-dark-800 flex items-center justify-end space-x-4">
           <Link
             to="/warranties"
@@ -641,7 +811,7 @@ const AddWarranty = () => {
           </Link>
           <button
             type="submit"
-            disabled={loading}
+            disabled={loading || invoiceProcessing}
             className="inline-flex items-center space-x-2 px-6 py-2.5 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 dark:bg-blue-600 dark:hover:bg-blue-500 rounded-xl shadow-sm shadow-blue-600/20 transition-all focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
           >
             {loading ? (
@@ -650,7 +820,7 @@ const AddWarranty = () => {
                 <span>Saving Warranty...</span>
               </>
             ) : (
-              <span>Save Warranty</span>
+              <span>Confirm & Save Warranty</span>
             )}
           </button>
         </div>

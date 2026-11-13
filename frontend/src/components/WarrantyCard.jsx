@@ -10,7 +10,9 @@ import {
   Armchair,
   Car,
   Watch,
-  Tag
+  Tag,
+  FileCheck,
+  FileText
 } from 'lucide-react';
 import StatusBadge from './StatusBadge';
 import { formatDate } from '../utils/formatters';
@@ -35,9 +37,40 @@ const WarrantyCard = ({ warranty }) => {
     status,
     formattedDaysLeft,
     productImage,
+    isInvoiceBacked,
+    evidenceStatus,
+    modelNumber,
   } = warranty;
 
   const CategoryIcon = categoryIcons[category] || Package;
+
+  const evidenceTag = () => {
+    if (!isInvoiceBacked) {
+      return {
+        label: 'No invoice',
+        className:
+          'bg-slate-100 text-slate-500 border-slate-200 dark:bg-dark-800 dark:text-slate-400 dark:border-dark-700',
+        Icon: FileText
+      };
+    }
+    if (evidenceStatus === 'confirmed') {
+      return {
+        label: 'Invoice evidence',
+        className:
+          'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-900/50',
+        Icon: FileCheck
+      };
+    }
+    return {
+      label: 'Invoice unverified',
+      className:
+        'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-900/50',
+      Icon: FileText
+    };
+  };
+
+  const evidence = evidenceTag();
+  const EvidenceIcon = evidence.Icon;
 
   // Countdown badge style based on status for light & dark
   const getCountdownBadge = () => {
@@ -107,6 +140,20 @@ const WarrantyCard = ({ warranty }) => {
           <h3 className="font-bold text-slate-900 dark:text-slate-100 text-lg group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors line-clamp-1" title={productName}>
             {productName}
           </h3>
+
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <span
+              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md border text-[10px] font-bold uppercase tracking-wide ${evidence.className}`}
+            >
+              <EvidenceIcon className="w-3 h-3" />
+              {evidence.label}
+            </span>
+            {modelNumber && (
+              <span className="inline-flex items-center px-1.5 py-0.5 rounded-md bg-slate-100 dark:bg-dark-800 text-slate-500 dark:text-slate-400 text-[10px] font-semibold max-w-[140px] truncate">
+                {modelNumber}
+              </span>
+            )}
+          </div>
 
           {/* Expiry Details */}
           <div className="mt-4 space-y-2 text-sm text-slate-600 dark:text-slate-400 border-t border-slate-100 dark:border-dark-800 pt-3">

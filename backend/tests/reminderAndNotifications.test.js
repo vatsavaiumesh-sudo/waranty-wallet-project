@@ -1,6 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { sendExpiryReminderEmail } from '../services/emailService.js';
+import { selectReminderInterval } from '../utils/warrantyHelpers.js';
 import Notification from '../models/Notification.js';
 
 describe('Reminders & Notification System', () => {
@@ -36,16 +37,14 @@ describe('Reminders & Notification System', () => {
     assert.ok(uniqueIndex, 'Compound unique index { user: 1, warranty: 1, reminderInterval: 1 } must be registered');
   });
 
-  test('Notification intervals calculation matches user configured schedule', () => {
-    const reminderDays = [30, 7, 1];
-    const candidateIntervals = [...new Set([...reminderDays, 0])].sort((a, b) => b - a);
-
-    assert.deepStrictEqual(candidateIntervals, [30, 7, 1, 0]);
-
-    // Test interval triggering:
-    // When daysRemaining = 5, it triggers for 7, 14, 30 if not already triggered
-    const daysRemaining = 5;
-    const triggeredIntervals = candidateIntervals.filter((i) => daysRemaining <= i);
-    assert.deepStrictEqual(triggeredIntervals, [30, 7]);
+  test('Only the most urgent due reminder interval is selected per run', () => {
+    // A warranty with 5 days remaining is inside both the 30-day and 7-day
+    // windows. The scheduler must send only the 7-day reminder this run, then
+    // skip later runs at the same interval thanks to the uniqueness guard.
+    assert.strictEqual(selectReminderInterval(5, [30, 7, 1]), 7);
+    assert.strictEqual(selectReminderInterval(20, [30, 7, 1]), 30);
+    assert.strictEqual(selectReminderInterval(1, [30, 7, 1]), 1);
+    assert.strictEqual(selectReminderInterval(0, [30, 7, 1]), 0);
+    assert.strictEqual(selectReminderInterval(-1, [30, 7, 1]), null);
   });
 });

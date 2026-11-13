@@ -110,7 +110,8 @@ export const AuthProvider = ({ children }) => {
       setUser((prev) => {
         const updated = {
           ...prev,
-          reminderPreferences: res.data
+          reminderPreferences: res.data,
+          timezone: res.timezone || prev?.timezone || 'UTC'
         };
         localStorage.setItem('warranty_wallet_user', JSON.stringify(updated));
         return updated;

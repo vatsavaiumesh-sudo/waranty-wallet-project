@@ -51,12 +51,24 @@ const userSchema = new mongoose.Schema(
       type: Date,
       default: null
     },
+    // IANA timezone used to decide which calendar day a reminder belongs to.
+    // Existing users default to UTC until they choose another value.
+    timezone: {
+      type: String,
+      default: 'UTC'
+    },
     reminderPreferences: {
       emailReminders: {
         type: Boolean,
         default: true
       },
       inAppReminders: {
+        type: Boolean,
+        default: true
+      },
+      // Security alerts are enabled by default. The UI explains that disabling
+      // them reduces the account owner's visibility of sensitive corrections.
+      securityEmails: {
         type: Boolean,
         default: true
       },

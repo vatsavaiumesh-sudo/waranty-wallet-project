@@ -160,6 +160,37 @@ export const fetchInvoiceUrl = async (id) => {
   return response.data;
 };
 
+/* Invoice extraction, integrity, replacement, removal, and audit history */
+
+export const extractInvoice = async (formData) => {
+  const response = await api.post('/warranties/invoice/extract', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' }
+  });
+  return response.data;
+};
+
+export const verifyInvoiceIntegrity = async (id) => {
+  const response = await api.get(`/warranties/${id}/invoice/verify`);
+  return response.data;
+};
+
+export const replaceWarrantyInvoice = async (id, formData) => {
+  const response = await api.post(`/warranties/${id}/invoice/replace`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' }
+  });
+  return response.data;
+};
+
+export const removeWarrantyInvoice = async (id, payload) => {
+  const response = await api.delete(`/warranties/${id}/invoice`, { data: payload });
+  return response.data;
+};
+
+export const fetchWarrantyAudit = async (id, params = {}) => {
+  const response = await api.get(`/warranties/${id}/audit`, { params });
+  return response.data;
+};
+
 /* =========================================================================
    NOTIFICATIONS API CALLS
    ========================================================================= */

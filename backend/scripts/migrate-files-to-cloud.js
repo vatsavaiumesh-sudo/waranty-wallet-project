@@ -38,9 +38,11 @@ const uploadsDir = path.join(__dirname, '../uploads');
 
 import Warranty from '../models/Warranty.js';
 import {
+  isCloudinaryConfigured,
   isCloudStorageConfigured,
   storeFile
 } from '../services/storageService.js';
+import { buildProductImageMeta } from '../services/productImageService.js';
 
 const args = process.argv.slice(2);
 const isDryRun = !args.includes('--execute') || args.includes('--dry-run');
@@ -142,9 +144,13 @@ const runFileMigration = async () => {
     }
 
     // 2. Validate Cloud Credentials before live execution
-    if (!isCloudStorageConfigured()) {
-      console.error('❌ Cloud storage credentials (S3_BUCKET, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY) are not configured.');
-      console.error('   Please provide storage credentials in environment variables before executing live migration.');
+    const hasInvoiceItems = filesToMigrate.some((item) => item.field === 'invoiceFile');
+    const canStoreImages = isCloudinaryConfigured() || isCloudStorageConfigured();
+
+    if ((hasInvoiceItems && !isCloudStorageConfigured()) || (!hasInvoiceItems && !canStoreImages)) {
+      console.error('❌ Persistent storage is not configured for the files that need migration.');
+      console.error('   Invoices require S3/R2. Product images require Cloudinary or S3/R2.');
+      console.error('   Please provide storage credentials before executing live migration.');
       await mongoose.disconnect();
       process.exit(1);
     }
@@ -177,9 +183,15 @@ const runFileMigration = async () => {
         const stored = await storeFile(simulatedFile, folder, item.userId);
 
         // Update Warranty document
-        await Warranty.findByIdAndUpdate(item.warrantyId, {
-          [item.field]: stored.url
-        });
+        const update = { [item.field]: stored.url };
+        if (item.field === 'productImage') {
+          update.productImageMeta = buildProductImageMeta(stored, {
+            sourceUrl: item.originalRef,
+            uploadedBy: item.userId
+          });
+        }
+
+        await Warranty.findByIdAndUpdate(item.warrantyId, update);
 
         migrationMap.push({
           warrantyId: item.warrantyId,

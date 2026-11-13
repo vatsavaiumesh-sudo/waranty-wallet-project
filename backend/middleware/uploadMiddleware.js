@@ -2,6 +2,7 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import { validateFileSignature, removeTempFile } from '../utils/fileUtils.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -72,3 +73,34 @@ export const avatarUpload = multer({
   limits: { fileSize: 2 * 1024 * 1024 }, // 2 MB
   fileFilter: avatarFileFilter
 }).single('avatar');
+
+/**
+ * Validate magic bytes for every uploaded file after Multer has stored it.
+ * Rejected files are removed from disk before the error is returned.
+ */
+export const validateUploadedFileSignatures = (req, res, next) => {
+  const files = [];
+
+  if (req.file) files.push(req.file);
+  if (Array.isArray(req.files)) {
+    files.push(...req.files);
+  } else if (req.files && typeof req.files === 'object') {
+    for (const group of Object.values(req.files)) {
+      if (Array.isArray(group)) files.push(...group);
+    }
+  }
+
+  for (const file of files) {
+    const result = validateFileSignature(file);
+    if (!result.valid) {
+      for (const candidate of files) removeTempFile(candidate);
+      const error = new Error(
+        `Invalid file upload: ${result.message} Only genuine JPG, PNG, WEBP, and PDF files are accepted.`
+      );
+      error.statusCode = 400;
+      return next(error);
+    }
+  }
+
+  return next();
+};

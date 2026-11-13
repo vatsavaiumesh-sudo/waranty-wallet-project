@@ -17,16 +17,30 @@ export const formatDate = (dateString) => {
 };
 
 /**
- * Format currency e.g. "$1,299.00" or "—"
+ * Format currency e.g. "$1,299.00" or "₹24,999.00" or "—"
+ * Falls back to USD when the currency code is missing or invalid.
  */
-export const formatCurrency = (amount) => {
+export const formatCurrency = (amount, currencyCode = 'USD') => {
   if (amount === null || amount === undefined || amount === '') return '—';
   const num = Number(amount);
   if (isNaN(num)) return '—';
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD'
-  }).format(num);
+
+  const code =
+    typeof currencyCode === 'string' && /^[A-Za-z]{3}$/.test(currencyCode.trim())
+      ? currencyCode.trim().toUpperCase()
+      : 'USD';
+
+  try {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: code
+    }).format(num);
+  } catch {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD'
+    }).format(num);
+  }
 };
 
 /**

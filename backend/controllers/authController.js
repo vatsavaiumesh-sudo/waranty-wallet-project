@@ -4,6 +4,11 @@ import User from '../models/User.js';
 import { generateToken } from '../middleware/authMiddleware.js';
 import { storeFile, deleteStoredFile, getCloudinaryPublicId } from '../services/storageService.js';
 
+const authMethodsFor = (user) => ({
+  google: Boolean(user.googleId),
+  password: Boolean(user.password)
+});
+
 /**
  * @desc    Register a new user
  * @route   POST /api/auth/register
@@ -57,6 +62,8 @@ export const register = async (req, res, next) => {
         avatar: user.avatar || '',
         role: user.role,
         reminderPreferences: user.reminderPreferences,
+        timezone: user.timezone || 'UTC',
+        authMethods: authMethodsFor(user),
         token
       }
     });
@@ -113,6 +120,8 @@ export const login = async (req, res, next) => {
         avatar: user.avatar || '',
         role: user.role,
         reminderPreferences: user.reminderPreferences,
+        timezone: user.timezone || 'UTC',
+        authMethods: authMethodsFor(user),
         token
       }
     });
@@ -136,7 +145,9 @@ export const getMe = async (req, res, next) => {
         email: req.user.email,
         avatar: req.user.avatar || '',
         role: req.user.role,
-        reminderPreferences: req.user.reminderPreferences
+        reminderPreferences: req.user.reminderPreferences,
+        timezone: req.user.timezone || 'UTC',
+        authMethods: authMethodsFor(req.user)
       }
     });
   } catch (error) {
@@ -151,7 +162,8 @@ export const getMe = async (req, res, next) => {
  */
 export const updatePreferences = async (req, res, next) => {
   try {
-    const { emailReminders, inAppReminders, reminderDays } = req.body;
+    const { emailReminders, inAppReminders, securityEmails, reminderDays, timezone } =
+      req.body;
 
     const user = await User.findById(req.user._id);
     if (!user) {
@@ -160,14 +172,32 @@ export const updatePreferences = async (req, res, next) => {
 
     if (emailReminders !== undefined) user.reminderPreferences.emailReminders = Boolean(emailReminders);
     if (inAppReminders !== undefined) user.reminderPreferences.inAppReminders = Boolean(inAppReminders);
-    if (Array.isArray(reminderDays)) user.reminderPreferences.reminderDays = reminderDays;
+    if (securityEmails !== undefined) user.reminderPreferences.securityEmails = Boolean(securityEmails);
+    if (Array.isArray(reminderDays)) {
+      user.reminderPreferences.reminderDays = reminderDays
+        .map(Number)
+        .filter((day) => Number.isInteger(day) && day >= 0 && day <= 365);
+    }
+
+    if (typeof timezone === 'string' && timezone.trim()) {
+      try {
+        new Intl.DateTimeFormat('en-US', { timeZone: timezone.trim() });
+        user.timezone = timezone.trim();
+      } catch {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid timezone. Use an IANA timezone such as Asia/Kolkata or UTC.'
+        });
+      }
+    }
 
     await user.save();
 
     res.status(200).json({
       success: true,
       message: 'Preferences updated successfully',
-      data: user.reminderPreferences
+      data: user.reminderPreferences,
+      timezone: user.timezone || 'UTC'
     });
   } catch (error) {
     next(error);
@@ -269,6 +299,11 @@ export const resetPassword = async (req, res, next) => {
         _id: user._id,
         name: user.name,
         email: user.email,
+        avatar: user.avatar || '',
+        role: user.role,
+        reminderPreferences: user.reminderPreferences,
+        timezone: user.timezone || 'UTC',
+        authMethods: { google: Boolean(user.googleId), password: true },
         token
       }
     });
@@ -380,6 +415,7 @@ export const googleAuth = async (req, res, next) => {
     }
 
     const token = generateToken(user._id);
+    const fullUser = await User.findById(user._id).select('+password');
 
     res.status(200).json({
       success: true,
@@ -391,6 +427,8 @@ export const googleAuth = async (req, res, next) => {
         avatar: user.avatar || '',
         role: user.role,
         reminderPreferences: user.reminderPreferences,
+        timezone: user.timezone || 'UTC',
+        authMethods: authMethodsFor(fullUser || user),
         token
       }
     });

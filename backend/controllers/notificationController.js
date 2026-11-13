@@ -8,13 +8,21 @@ import { processWarrantyReminders } from '../services/reminderService.js';
  */
 export const getNotifications = async (req, res, next) => {
   try {
-    const notifications = await Notification.find({ user: req.user._id })
+    const query = { user: req.user._id };
+
+    // Respect the in-app preference for expiry reminders. Security alerts are
+    // always shown in-app because they describe sensitive account activity.
+    if (req.user.reminderPreferences?.inAppReminders === false) {
+      query.type = { $ne: 'EXPIRY_REMINDER' };
+    }
+
+    const notifications = await Notification.find(query)
       .populate('warranty', 'productName brand category warrantyExpiryDate productImage')
       .sort({ createdAt: -1 })
       .limit(50);
 
     const unreadCount = await Notification.countDocuments({
-      user: req.user._id,
+      ...query,
       isRead: false
     });
 

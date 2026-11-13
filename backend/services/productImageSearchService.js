@@ -2,6 +2,65 @@ import http from 'http';
 import https from 'https';
 import { URL } from 'url';
 import { storeFile } from './storageService.js';
+import {
+  computeBufferChecksum,
+  detectFileSignature
+} from '../utils/fileUtils.js';
+
+export const PRODUCT_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+
+const ALLOWED_IMAGE_MIME_TYPES = Object.freeze(['image/jpeg', 'image/png', 'image/webp']);
+
+const normalizeMimeType = (contentType) => {
+  const normalized = String(contentType || '')
+    .split(';')[0]
+    .trim()
+    .toLowerCase();
+  return normalized === 'image/jpg' ? 'image/jpeg' : normalized;
+};
+
+const signatureForMime = (mimeType) => {
+  if (mimeType === 'image/jpeg') return 'jpg';
+  if (mimeType === 'image/png') return 'png';
+  if (mimeType === 'image/webp') return 'webp';
+  return 'unknown';
+};
+
+/**
+ * Read a fetch response body while enforcing the maximum image size. This avoids
+ * buffering an arbitrarily large response before the size check.
+ */
+const readResponseBufferWithLimit = async (response, maxBytes) => {
+  if (!response.body || typeof response.body.getReader !== 'function') {
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (buffer.length > maxBytes) {
+      throw new Error(`Image exceeds maximum allowed size of ${Math.round(maxBytes / (1024 * 1024))}MB`);
+    }
+    return buffer;
+  }
+
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+    total += chunk.length;
+    if (total > maxBytes) {
+      try {
+        await reader.cancel();
+      } catch {
+        // Best-effort cancellation only.
+      }
+      throw new Error(`Image exceeds maximum allowed size of ${Math.round(maxBytes / (1024 * 1024))}MB`);
+    }
+    chunks.push(chunk);
+  }
+
+  return Buffer.concat(chunks);
+};
 
 /**
  * Verify hostname is safe and not resolving to private/internal networks (SSRF prevention)
@@ -155,18 +214,31 @@ export const searchProductImages = async (query) => {
 
 /**
  * Downloads a validated online image and copies it into application persistent storage.
- * Strictly verifies SSRF protection, allowed protocols, MIME types, and size <= 5MB.
+ * Strictly verifies SSRF protection, allowed protocols, MIME types, magic bytes, and size <= 5MB.
  *
  * @param {string} remoteUrl - The chosen image URL
  * @param {string} userId - Authenticated user ID
- * @returns {Promise<{ key: string, url: string }>}
+ * @param {Object} [options]
+ * @param {boolean} [options.allowAnyPublicHost] - Repair-script only: allow a legacy
+ *   public image host after SSRF checks. User-facing selections still require an
+ *   approved provider host.
+ * @returns {Promise<{ key: string, url: string, isCloud: boolean, provider: string, mimeType: string, size: number, checksum: string, sourceUrl: string }>}
  */
-export const downloadAndStoreRemoteImage = async (remoteUrl, userId) => {
+export const downloadAndStoreRemoteImage = async (
+  remoteUrl,
+  userId,
+  { allowAnyPublicHost = false } = {}
+) => {
   if (!remoteUrl) {
     throw new Error('Image URL is required');
   }
 
-  const parsed = new URL(remoteUrl);
+  let parsed;
+  try {
+    parsed = new URL(remoteUrl);
+  } catch {
+    throw new Error('Invalid image URL.');
+  }
 
   // Enforce HTTPS / HTTP protocols
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
@@ -178,52 +250,76 @@ export const downloadAndStoreRemoteImage = async (remoteUrl, userId) => {
     throw new Error('Invalid or restricted destination hostname.');
   }
 
-  // Restrict downloads to approved image hosts returned by configured providers.
-  if (!isApprovedImageHost(parsed.hostname)) {
+  // Restrict user-facing downloads to approved image hosts returned by
+  // configured providers. The repair script may opt into any public host.
+  if (!allowAnyPublicHost && !isApprovedImageHost(parsed.hostname)) {
     throw new Error('Image host is not approved for download.');
   }
 
   const response = await fetch(remoteUrl, {
-  headers: {
-    'User-Agent': 'WarrantyWalletApp/2.0 (image-downloader)'
-  },
-  signal: AbortSignal.timeout(25000),
-  redirect: 'error'
-});
+    headers: {
+      'User-Agent': 'WarrantyWalletApp/2.0 (image-downloader)'
+    },
+    signal: AbortSignal.timeout(25000),
+    redirect: 'error'
+  });
 
   if (!response.ok) {
     throw new Error(`Failed to fetch image from source (HTTP ${response.status})`);
   }
 
-  const contentType = (response.headers.get('content-type') || '').toLowerCase();
-  const allowedMimes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
-  const matchedMime = allowedMimes.find((m) => contentType.includes(m.replace('image/', '')));
+  const contentType = normalizeMimeType(response.headers.get('content-type'));
 
-  if (!matchedMime && !contentType.startsWith('image/')) {
-    throw new Error(`Invalid content type "${contentType}". Only JPEG, PNG, and WEBP images are accepted.`);
+  if (!ALLOWED_IMAGE_MIME_TYPES.includes(contentType)) {
+    throw new Error(
+      `Invalid content type "${contentType || 'unknown'}". Only JPEG, PNG, and WEBP images are accepted.`
+    );
   }
 
-  const arrayBuffer = await response.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
+  const declaredLength = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declaredLength) && declaredLength > PRODUCT_IMAGE_MAX_BYTES) {
+    throw new Error(
+      `Image exceeds maximum allowed size of ${Math.round(PRODUCT_IMAGE_MAX_BYTES / (1024 * 1024))}MB`
+    );
+  }
 
-  if (buffer.length > 5 * 1024 * 1024) {
-    throw new Error('Image exceeds maximum allowed size of 5MB');
+  const buffer = await readResponseBufferWithLimit(response, PRODUCT_IMAGE_MAX_BYTES);
+  if (!buffer.length) {
+    throw new Error('Downloaded image is empty.');
+  }
+
+  // Browser/provider content types are not trusted on their own. Verify the
+  // actual bytes so an SVG or HTML response cannot be stored as a JPEG.
+  const detected = detectFileSignature(buffer);
+  const expected = signatureForMime(contentType);
+  if (detected !== expected) {
+    throw new Error(
+      `Image content does not match its declared type "${contentType}".`
+    );
   }
 
   const extMap = {
     'image/jpeg': '.jpg',
-    'image/jpg': '.jpg',
     'image/png': '.png',
     'image/webp': '.webp'
   };
 
-  const ext = extMap[matchedMime] || '.jpg';
+  const ext = extMap[contentType];
   const simulatedFile = {
     originalname: `online-product-${Date.now()}${ext}`,
     buffer,
-    mimetype: matchedMime || 'image/jpeg',
-    fieldname: 'productImage'
+    mimetype: contentType,
+    fieldname: 'productImage',
+    size: buffer.length
   };
 
-  return await storeFile(simulatedFile, 'images', userId);
+  const stored = await storeFile(simulatedFile, 'images', userId);
+
+  return {
+    ...stored,
+    mimeType: contentType,
+    size: buffer.length,
+    checksum: computeBufferChecksum(buffer),
+    sourceUrl: remoteUrl
+  };
 };

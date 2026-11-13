@@ -12,7 +12,11 @@ import {
   AlertTriangle,
   Sparkles,
   RefreshCw,
-  Sliders
+  Sliders,
+  ShieldAlert,
+  ShieldCheck,
+  Globe,
+  MailWarning
 } from 'lucide-react';
 import {
   fetchNotifications,
@@ -22,6 +26,110 @@ import {
   clearAllNotifications
 } from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import { getFieldLabel } from '../utils/fieldLabels';
+
+const TIMEZONE_OPTIONS = [
+  'UTC',
+  'Asia/Kolkata',
+  'Asia/Dubai',
+  'Asia/Singapore',
+  'Asia/Tokyo',
+  'Australia/Sydney',
+  'Europe/London',
+  'Europe/Berlin',
+  'Europe/Paris',
+  'America/New_York',
+  'America/Chicago',
+  'America/Denver',
+  'America/Los_Angeles'
+];
+
+const DELIVERY_META = {
+  sent: {
+    label: 'Email sent',
+    className:
+      'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-900/50',
+    Icon: ShieldCheck
+  },
+  failed: {
+    label: 'Email failed — retrying',
+    className:
+      'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/40 dark:text-rose-300 dark:border-rose-900/50',
+    Icon: MailWarning
+  },
+  pending: {
+    label: 'Email pending',
+    className:
+      'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-900/50',
+    Icon: Mail
+  },
+  not_required: {
+    label: 'Email disabled',
+    className:
+      'bg-slate-100 text-slate-600 border-slate-200 dark:bg-dark-800 dark:text-slate-300 dark:border-dark-700',
+    Icon: Mail
+  }
+};
+
+const DeliveryBadge = ({ status }) => {
+  const meta = DELIVERY_META[status];
+  if (!meta) return null;
+  const Icon = meta.Icon;
+  return (
+    <span
+      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[10px] font-bold ${meta.className}`}
+    >
+      <Icon className="w-2.5 h-2.5" />
+      {meta.label}
+    </span>
+  );
+};
+
+const SecurityDetails = ({ details }) => {
+  if (!details) return null;
+  const changes = details.changes || [];
+
+  return (
+    <div className="mt-2 space-y-2">
+      {changes.length > 0 && (
+        <div className="rounded-lg border border-rose-200/70 dark:border-rose-900/50 overflow-hidden">
+          <table className="w-full text-[11px]">
+            <thead className="bg-rose-50 dark:bg-rose-950/30 text-rose-700 dark:text-rose-300">
+              <tr>
+                <th className="text-left font-semibold px-2 py-1">Field</th>
+                <th className="text-left font-semibold px-2 py-1">Previous</th>
+                <th className="text-left font-semibold px-2 py-1">New</th>
+              </tr>
+            </thead>
+            <tbody>
+              {changes.map((change, index) => (
+                <tr
+                  key={`${change.field}-${index}`}
+                  className="border-t border-rose-100 dark:border-rose-900/30"
+                >
+                  <td className="px-2 py-1 font-semibold text-slate-700 dark:text-slate-200">
+                    {getFieldLabel(change.field)}
+                  </td>
+                  <td className="px-2 py-1 text-rose-600 dark:text-rose-400 break-words">
+                    {String(change.previousValue ?? '—') || '—'}
+                  </td>
+                  <td className="px-2 py-1 text-emerald-700 dark:text-emerald-400 break-words">
+                    {String(change.newValue ?? '—') || '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {details.reason && (
+        <p className="text-[11px] text-slate-500 dark:text-slate-400 italic">
+          Reason: {details.reason}
+        </p>
+      )}
+    </div>
+  );
+};
 
 const NotificationDrawer = ({ isOpen, onClose, onUnreadChange }) => {
   const { user, updatePreferences } = useAuth();
@@ -36,18 +144,23 @@ const NotificationDrawer = ({ isOpen, onClose, onUnreadChange }) => {
   const [settingsForm, setSettingsForm] = useState({
     emailReminders: true,
     inAppReminders: true,
-    reminderDays: [30, 7, 1]
+    securityEmails: true,
+    reminderDays: [30, 7, 1],
+    timezone: 'UTC'
   });
   const [savingSettings, setSavingSettings] = useState(false);
   const [settingsSuccess, setSettingsSuccess] = useState('');
+  const [settingsError, setSettingsError] = useState('');
 
   // Sync settings when user is loaded
   useEffect(() => {
-    if (user?.reminderPreferences) {
+    if (user?.reminderPreferences || user?.timezone) {
       setSettingsForm({
-        emailReminders: user.reminderPreferences.emailReminders ?? true,
-        inAppReminders: user.reminderPreferences.inAppReminders ?? true,
-        reminderDays: user.reminderPreferences.reminderDays || [30, 7, 1]
+        emailReminders: user.reminderPreferences?.emailReminders ?? true,
+        inAppReminders: user.reminderPreferences?.inAppReminders ?? true,
+        securityEmails: user.reminderPreferences?.securityEmails ?? true,
+        reminderDays: user.reminderPreferences?.reminderDays || [30, 7, 1],
+        timezone: user.timezone || 'UTC'
       });
     }
   }, [user]);
@@ -143,14 +256,19 @@ const NotificationDrawer = ({ isOpen, onClose, onUnreadChange }) => {
     try {
       setSavingSettings(true);
       setSettingsSuccess('');
+      setSettingsError('');
       const res = await updatePreferences(settingsForm);
       if (res.success) {
         setSettingsSuccess('Preferences saved successfully!');
         setTimeout(() => setSettingsSuccess(''), 3000);
+      } else {
+        setSettingsError(res.message || 'Failed to save preferences.');
       }
     } catch (err) {
       console.error(err);
-      alert('Failed to save preferences.');
+      setSettingsError(
+        err.response?.data?.message || 'Failed to save preferences. Please try again.'
+      );
     } finally {
       setSavingSettings(false);
     }
@@ -287,7 +405,77 @@ const NotificationDrawer = ({ isOpen, onClose, onUnreadChange }) => {
                 ) : (
                   <div className="space-y-3">
                     {notifications.map((n) => {
-                      const isToday = n.daysRemaining === 0;
+                      const isSecurity = n.type === 'SECURITY_CORRECTION';
+                      const isToday = !isSecurity && n.daysRemaining === 0;
+
+                      if (isSecurity) {
+                        return (
+                          <div
+                            key={n._id}
+                            className={`p-3.5 rounded-2xl border transition-all relative ${
+                              n.isRead
+                                ? 'bg-slate-50/60 dark:bg-dark-850/60 border-slate-200/80 dark:border-dark-800 text-slate-600 dark:text-slate-400'
+                                : 'bg-rose-50/70 dark:bg-rose-950/20 border-rose-200 dark:border-rose-900/60 shadow-xs text-slate-900 dark:text-white'
+                            }`}
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                {!n.isRead && (
+                                  <span className="w-2 h-2 rounded-full bg-rose-600 shrink-0" />
+                                )}
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-rose-100 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300">
+                                  <ShieldAlert className="w-3 h-3" />
+                                  Security alert
+                                </span>
+                                <DeliveryBadge status={n.emailStatus} />
+                              </div>
+
+                              <div className="flex items-center space-x-1 shrink-0">
+                                {!n.isRead && (
+                                  <button
+                                    onClick={(e) => handleMarkAsRead(n._id, e)}
+                                    className="p-1 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 rounded-lg hover:bg-slate-100 dark:hover:bg-dark-700 transition-colors"
+                                    title="Mark as read"
+                                  >
+                                    <CheckCheck className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+                                <button
+                                  onClick={(e) => handleDelete(n._id, e)}
+                                  className="p-1 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 rounded-lg hover:bg-slate-100 dark:hover:bg-dark-700 transition-colors"
+                                  title="Delete notification"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
+
+                            <h3 className="text-xs font-bold mt-2">{n.title}</h3>
+                            <p className="text-xs text-slate-600 dark:text-slate-300 mt-1 leading-relaxed">
+                              {n.message}
+                            </p>
+
+                            <SecurityDetails details={n.details} />
+
+                            {n.warranty && (
+                              <div className="mt-3 pt-2 border-t border-rose-100 dark:border-rose-900/30 flex items-center justify-between text-xs">
+                                <span className="text-[11px] text-slate-400 truncate max-w-[180px]">
+                                  {n.warranty.productName}
+                                </span>
+                                <Link
+                                  to={`/warranties/${n.warranty._id || n.warranty}`}
+                                  onClick={onClose}
+                                  className="inline-flex items-center space-x-1 font-semibold text-rose-600 dark:text-rose-400 hover:underline"
+                                >
+                                  <span>Review record</span>
+                                  <ExternalLink className="w-3 h-3" />
+                                </Link>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      }
+
                       return (
                         <div
                           key={n._id}
@@ -298,7 +486,7 @@ const NotificationDrawer = ({ isOpen, onClose, onUnreadChange }) => {
                           }`}
                         >
                           <div className="flex items-start justify-between gap-2">
-                            <div className="flex items-center space-x-2">
+                            <div className="flex flex-wrap items-center gap-1.5">
                               {!n.isRead && (
                                 <span className="w-2 h-2 rounded-full bg-blue-600 shrink-0" />
                               )}
@@ -311,6 +499,7 @@ const NotificationDrawer = ({ isOpen, onClose, onUnreadChange }) => {
                               >
                                 {isToday ? 'Expires Today' : `${n.daysRemaining} days left`}
                               </span>
+                              <DeliveryBadge status={n.emailStatus} />
                             </div>
 
                             <div className="flex items-center space-x-1 shrink-0">
@@ -407,7 +596,71 @@ const NotificationDrawer = ({ isOpen, onClose, onUnreadChange }) => {
                         className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500"
                       />
                     </label>
+
+                    {/* Security Alert Emails Toggle */}
+                    <label className="flex items-center justify-between p-3.5 rounded-xl border border-slate-200 dark:border-dark-750 bg-slate-50/50 dark:bg-dark-850 cursor-pointer">
+                      <div className="flex items-center space-x-3">
+                        <ShieldAlert className="w-5 h-5 text-rose-600 dark:text-rose-400" />
+                        <div>
+                          <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">Security Alert Emails</p>
+                          <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                            Mandatory owner notices when invoice-backed details change
+                          </p>
+                        </div>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={settingsForm.securityEmails}
+                        onChange={(e) => setSettingsForm({ ...settingsForm, securityEmails: e.target.checked })}
+                        className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500"
+                      />
+                    </label>
+
+                    {!settingsForm.securityEmails && (
+                      <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/50 text-amber-800 dark:text-amber-300 text-[11px] flex items-start gap-2">
+                        <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                        <span>
+                          Security alert emails are strongly recommended. If you disable them, security
+                          corrections still appear in-app and in the audit history, but you will not receive
+                          an email warning.
+                        </span>
+                      </div>
+                    )}
                   </div>
+                </div>
+
+                {/* Timezone */}
+                <div>
+                  <h3 className="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider mb-1">
+                    <span className="inline-flex items-center gap-1.5">
+                      <Globe className="w-3.5 h-3.5" />
+                      Timezone
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">
+                    Reminder days are calculated against your local calendar date.
+                  </p>
+                  <select
+                    value={
+                      TIMEZONE_OPTIONS.includes(settingsForm.timezone)
+                        ? settingsForm.timezone
+                        : settingsForm.timezone || 'UTC'
+                    }
+                    onChange={(e) => setSettingsForm({ ...settingsForm, timezone: e.target.value })}
+                    className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-dark-900 border border-slate-200 dark:border-dark-700 rounded-xl text-sm font-medium text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    {!TIMEZONE_OPTIONS.includes(settingsForm.timezone) && settingsForm.timezone && (
+                      <option value={settingsForm.timezone}>{settingsForm.timezone}</option>
+                    )}
+                    {TIMEZONE_OPTIONS.map((zone) => (
+                      <option key={zone} value={zone}>
+                        {zone}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-1 text-[11px] text-slate-400">
+                    The server validates the timezone name using the IANA database.
+                  </p>
                 </div>
 
                 {/* Reminder Timing Intervals */}
@@ -439,6 +692,12 @@ const NotificationDrawer = ({ isOpen, onClose, onUnreadChange }) => {
                     })}
                   </div>
                 </div>
+
+                {settingsError && (
+                  <div className="p-3 bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 text-xs font-semibold rounded-xl text-center">
+                    {settingsError}
+                  </div>
+                )}
 
                 {settingsSuccess && (
                   <div className="p-3 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 text-xs font-semibold rounded-xl text-center">
